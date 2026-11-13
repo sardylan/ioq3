@@ -1,0 +1,82 @@
+{
+    "version": 3,
+    "cmakeMinimumRequired": {
+        "major": 3,
+        "minor": 25,
+        "patch": 0
+    },
+    "configurePresets": [
+        {
+            "name": "rpi-base",
+            "hidden": true,
+            "description": "Native build on Raspberry Pi OS with the OpenGL ES 2.0 renderer",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build/${presetName}",
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Linux"
+            },
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "BUILD_RENDERER_GLES2": "ON",
+                "BUILD_RENDERER_GL1": "ON",
+                "BUILD_RENDERER_GL2": "OFF"
+            }
+        },
+        {
+            "name": "rpi-aarch64",
+            "displayName": "Raspberry Pi 3/4/5, 64-bit",
+            "description": "64-bit Raspberry Pi OS, runs on Raspberry Pi 3, 4 and 5 (Cortex-A53 baseline)",
+            "inherits": "rpi-base",
+            "cacheVariables": {
+                "CMAKE_C_FLAGS": "-mcpu=cortex-a53"
+            }
+        },
+        {
+            "name": "rpi4-aarch64",
+            "displayName": "Raspberry Pi 4, 64-bit",
+            "description": "64-bit Raspberry Pi OS, tuned for the Raspberry Pi 4 (Cortex-A72), also runs on the Pi 5",
+            "inherits": "rpi-base",
+            "cacheVariables": {
+                "CMAKE_C_FLAGS": "-mcpu=cortex-a72"
+            }
+        },
+        {
+            "name": "rpi5-aarch64",
+            "displayName": "Raspberry Pi 5, 64-bit",
+            "description": "64-bit Raspberry Pi OS, tuned for the Raspberry Pi 5 (Cortex-A76), only runs on the Pi 5",
+            "inherits": "rpi-base",
+            "cacheVariables": {
+                "CMAKE_C_FLAGS": "-mcpu=cortex-a76"
+            }
+        },
+        {
+            "name": "rpi-armhf",
+            "displayName": "Raspberry Pi 3/4/5, 32-bit",
+            "description": "32-bit (armhf) Raspberry Pi OS, runs on Raspberry Pi 3, 4 and 5 (Cortex-A53 / NEON baseline)",
+            "inherits": "rpi-base",
+            "cacheVariables": {
+                "CMAKE_C_FLAGS": "-mcpu=cortex-a53 -mfpu=neon-fp-armv8 -mfloat-abi=hard"
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "rpi-aarch64",
+            "configurePreset": "rpi-aarch64"
+        },
+        {
+            "name": "rpi4-aarch64",
+            "configurePreset": "rpi4-aarch64"
+        },
+        {
+            "name": "rpi5-aarch64",
+            "configurePreset": "rpi5-aarch64"
+        },
+        {
+            "name": "rpi-armhf",
+            "configurePreset": "rpi-armhf"
+        }
+    ]
+}
