@@ -817,10 +817,22 @@ const void	*RB_DrawBuffer( const void *data ) {
 	// stereo (GL_BACK_LEFT / GL_BACK_RIGHT) buffers don't exist in OpenGL ES
 	(void)cmd;
 
-	// clear screen for debugging
-	if ( r_clear->integer ) {
-		qglClearColor( 1, 0, 0.5, 1 );
-		qglClear( GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT );
+	// Tile based GPUs (Raspberry Pi, mobile) would otherwise load the
+	// previous frame's tiles from memory before drawing: clear every
+	// buffer at the start of the frame. With anaglyph the second eye
+	// is drawn on top of the first, so only the depth buffer is cleared.
+	if ( r_clear->integer || !r_anaglyphMode->integer ) {
+		GL_State( GLS_DEFAULT );	// depth writes must be enabled for the clear
+		qglScissor( 0, 0, glConfig.vidWidth, glConfig.vidHeight );
+
+		if ( r_clear->integer ) {
+			// clear screen for debugging
+			qglClearColor( 1, 0, 0.5, 1 );
+		} else {
+			qglClearColor( 0, 0, 0, 1 );
+		}
+
+		qglClear( GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT );
 	}
 
 	return (const void *)(cmd + 1);
@@ -944,6 +956,14 @@ const void	*RB_SwapBuffers( const void *data ) {
 	}
 
 	GLimp_LogComment( "***************** RB_SwapBuffers *****************\n\n\n" );
+
+	// depth and stencil aren't needed after the frame, tell tile based GPUs
+	// not to write them back to memory
+	if ( qglInvalidateFramebufferES ) {
+		static const GLenum attachments[2] = { GL_DEPTH, GL_STENCIL };
+
+		qglInvalidateFramebufferES( GL_FRAMEBUFFER, 2, attachments );
+	}
 
 	GLimp_EndFrame();
 

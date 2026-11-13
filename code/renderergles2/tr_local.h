@@ -1036,6 +1036,7 @@ extern backEndState_t	backEnd;
 extern trGlobals_t	tr;
 extern glstate_t	glState;		// outside of TR since it shouldn't be cleared during ref re-init
 extern qboolean		glReadDepthAvailable;
+extern void (APIENTRYP qglInvalidateFramebufferES) ( GLenum target, GLsizei numAttachments, const GLenum *attachments );
 
 //
 // cvars

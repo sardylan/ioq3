@@ -21,6 +21,12 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 */
 // tr_init.c -- functions that are not called every frame
 
+#ifdef USE_INTERNAL_SDL_HEADERS
+#	include "SDL.h"
+#else
+#	include <SDL.h>
+#endif
+
 #include "tr_local.h"
 
 glconfig_t  glConfig;
@@ -33,6 +39,10 @@ glstate_t	glState;
 
 // OpenGL ES can only read back the depth buffer with GL_NV_read_depth (flares)
 qboolean	glReadDepthAvailable;
+
+// glInvalidateFramebuffer (OpenGL ES 3.0) or glDiscardFramebufferEXT
+// (GL_EXT_discard_framebuffer), same signature
+void (APIENTRYP qglInvalidateFramebufferES) ( GLenum target, GLsizei numAttachments, const GLenum *attachments );
 
 static void GfxInfo_f( void );
 
@@ -234,6 +244,13 @@ static void InitOpenGL( void )
 		glConfig.textureEnvAddAvailable = qtrue;
 
 		glReadDepthAvailable = R_HasExtension( "GL_NV_read_depth" );
+
+		qglInvalidateFramebufferES = NULL;
+		if ( QGLES_VERSION_ATLEAST( 3, 0 ) ) {
+			qglInvalidateFramebufferES = SDL_GL_GetProcAddress( "glInvalidateFramebuffer" );
+		} else if ( R_HasExtension( "GL_EXT_discard_framebuffer" ) ) {
+			qglInvalidateFramebufferES = SDL_GL_GetProcAddress( "glDiscardFramebufferEXT" );
+		}
 
 		R_InitVertexStream();
 		GLSL_Init();
