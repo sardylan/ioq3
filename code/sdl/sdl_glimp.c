@@ -259,7 +259,7 @@ GLimp_GetProcAddresses
 Get addresses for OpenGL functions.
 ===============
 */
-static qboolean GLimp_GetProcAddresses( qboolean fixedFunction ) {
+static qboolean GLimp_GetProcAddresses( glContextType_t contextType ) {
 	qboolean success = qtrue;
 	const char *version;
 
@@ -298,7 +298,23 @@ static qboolean GLimp_GetProcAddresses( qboolean fixedFunction ) {
 		sscanf( version, "%d.%d", &qglMajorVersion, &qglMinorVersion );
 	}
 
-	if ( fixedFunction ) {
+	if ( contextType == GLCONTEXT_GLES2 ) {
+		if ( QGLES_VERSION_ATLEAST( 2, 0 ) ) {
+			QGL_1_1_PROCS;
+			QGL_ES_1_1_PROCS;
+			QGL_1_3_PROCS;
+			QGL_1_5_PROCS;
+			QGL_2_0_PROCS;
+
+			qglClearDepth = GLimp_GLES_ClearDepth;
+			qglDepthRange = GLimp_GLES_DepthRange;
+			qglDrawBuffer = GLimp_GLES_DrawBuffer;
+			qglPolygonMode = GLimp_GLES_PolygonMode;
+		} else {
+			ri.Printf( PRINT_ALL, "Unsupported OpenGL Version (%s), OpenGL ES 2.0 is required\n", version );
+			return qfalse;
+		}
+	} else if ( contextType == GLCONTEXT_GL1 ) {
 		if ( QGL_VERSION_ATLEAST( 1, 1 ) ) {
 			QGL_1_1_PROCS;
 			QGL_1_1_FIXED_FUNCTION_PROCS;
@@ -392,7 +408,7 @@ static void GLimp_ClearProcAddresses( void ) {
 GLimp_SetMode
 ===============
 */
-static int GLimp_SetMode(int mode, qboolean fullscreen, qboolean noborder, qboolean fixedFunction)
+static int GLimp_SetMode(int mode, qboolean fullscreen, qboolean noborder, glContextType_t contextType)
 {
 	struct GLimp_ContextType {
 		int profileMask;
@@ -533,7 +549,24 @@ static int GLimp_SetMode(int mode, qboolean fullscreen, qboolean noborder, qbool
 
 	numContexts = 0;
 
-	if ( !fixedFunction ) {
+	if ( contextType == GLCONTEXT_GLES2 ) {
+		// OpenGL ES only; never fall back to desktop OpenGL, which on
+		// embedded devices (e.g. Raspberry Pi) is often software rendered
+		SDL_GL_ResetAttributes();
+
+#ifdef __EMSCRIPTEN__
+		// WebGL 2.0 isn't fully backward compatible so you have to ask for it specifically
+		contexts[numContexts].profileMask = SDL_GL_CONTEXT_PROFILE_ES;
+		contexts[numContexts].majorVersion = 3;
+		contexts[numContexts].minorVersion = 0;
+		numContexts++;
+#endif
+
+		contexts[numContexts].profileMask = SDL_GL_CONTEXT_PROFILE_ES;
+		contexts[numContexts].majorVersion = 2;
+		contexts[numContexts].minorVersion = 0;
+		numContexts++;
+	} else if ( contextType == GLCONTEXT_GL2 ) {
 		int profileMask;
 		qboolean preferOpenGLES;
 
@@ -727,7 +760,7 @@ static int GLimp_SetMode(int mode, qboolean fullscreen, qboolean noborder, qbool
 				continue;
 			}
 
-			if ( !GLimp_GetProcAddresses( fixedFunction ) )
+			if ( !GLimp_GetProcAddresses( contextType ) )
 			{
 				ri.Printf( PRINT_ALL, "GLimp_GetProcAddresses() for %s context failed\n", contextName );
 				GLimp_ClearProcAddresses();
@@ -753,6 +786,22 @@ static int GLimp_SetMode(int mode, qboolean fullscreen, qboolean noborder, qbool
 					SDL_DestroyWindow( SDL_window );
 					SDL_window = NULL;
 					continue;
+				}
+			}
+
+			if ( contextType == GLCONTEXT_GLES2 ) {
+				const char *renderer = (const char *)qglGetString( GL_RENDERER );
+
+				if ( !renderer || Q_stristr( renderer, "llvmpipe" ) || Q_stristr( renderer, "softpipe" ) ||
+				     Q_stristr( renderer, "Software Rasterizer" ) || Q_stristr( renderer, "Software Renderer" ) )
+				{
+					ri.Printf( PRINT_WARNING, "\n"
+						"*****************************************************************\n"
+						"GL_RENDERER is %s: the %s context is software rendered!\n"
+						"Performance will be very poor. On Raspberry Pi make sure the\n"
+						"KMS driver is enabled (dtoverlay=vc4-kms-v3d in config.txt).\n"
+						"*****************************************************************\n\n",
+						renderer ? renderer : "(null)", contextName );
 				}
 			}
 
@@ -839,7 +888,7 @@ static int GLimp_SetMode(int mode, qboolean fullscreen, qboolean noborder, qbool
 GLimp_StartDriverAndSetMode
 ===============
 */
-static qboolean GLimp_StartDriverAndSetMode(int mode, qboolean fullscreen, qboolean noborder, qboolean gl3Core)
+static qboolean GLimp_StartDriverAndSetMode(int mode, qboolean fullscreen, qboolean noborder, glContextType_t contextType)
 {
 	rserr_t err;
 
@@ -866,7 +915,7 @@ static qboolean GLimp_StartDriverAndSetMode(int mode, qboolean fullscreen, qbool
 		fullscreen = qfalse;
 	}
 	
-	err = GLimp_SetMode(mode, fullscreen, noborder, gl3Core);
+	err = GLimp_SetMode(mode, fullscreen, noborder, contextType);
 
 	switch ( err )
 	{
@@ -889,7 +938,7 @@ static qboolean GLimp_StartDriverAndSetMode(int mode, qboolean fullscreen, qbool
 GLimp_InitExtensions
 ===============
 */
-static void GLimp_InitExtensions( qboolean fixedFunction )
+static void GLimp_InitExtensions( glContextType_t contextType )
 {
 	if ( !r_allowExtensions->integer )
 	{
@@ -942,7 +991,7 @@ static void GLimp_InitExtensions( qboolean fixedFunction )
 	}
 
 	// OpenGL 1 fixed function pipeline
-	if ( fixedFunction )
+	if ( contextType == GLCONTEXT_GL1 )
 	{
 		// GL_EXT_texture_env_add
 		glConfig.textureEnvAddAvailable = qfalse;
@@ -1075,7 +1124,7 @@ This routine is responsible for initializing the OS specific portions
 of OpenGL
 ===============
 */
-void GLimp_Init( qboolean fixedFunction )
+void GLimp_Init( glContextType_t contextType )
 {
 	ri.Printf( PRINT_DEVELOPER, "Glimp_Init( )\n" );
 
@@ -1096,13 +1145,13 @@ void GLimp_Init( qboolean fixedFunction )
 	ri.Sys_GLimpInit( );
 
 	// Create the window and set up the context
-	if(GLimp_StartDriverAndSetMode(r_mode->integer, r_fullscreen->integer, r_noborder->integer, fixedFunction))
+	if(GLimp_StartDriverAndSetMode(r_mode->integer, r_fullscreen->integer, r_noborder->integer, contextType))
 		goto success;
 
 	// Try again, this time in a platform specific "safe mode"
 	ri.Sys_GLimpSafeInit( );
 
-	if(GLimp_StartDriverAndSetMode(r_mode->integer, r_fullscreen->integer, qfalse, fixedFunction))
+	if(GLimp_StartDriverAndSetMode(r_mode->integer, r_fullscreen->integer, qfalse, contextType))
 		goto success;
 
 	// Finally, try the default screen resolution
@@ -1111,7 +1160,7 @@ void GLimp_Init( qboolean fixedFunction )
 		ri.Printf( PRINT_ALL, "Setting r_mode %d failed, falling back on r_mode %d\n",
 				r_mode->integer, R_MODE_FALLBACK );
 
-		if(GLimp_StartDriverAndSetMode(R_MODE_FALLBACK, qfalse, qfalse, fixedFunction))
+		if(GLimp_StartDriverAndSetMode(R_MODE_FALLBACK, qfalse, qfalse, contextType))
 			goto success;
 	}
 
@@ -1166,7 +1215,7 @@ success:
 	}
 
 	// initialize extensions
-	GLimp_InitExtensions( fixedFunction );
+	GLimp_InitExtensions( contextType );
 
 	ri.Cvar_Get( "r_availableModes", "", CVAR_ROM );
 

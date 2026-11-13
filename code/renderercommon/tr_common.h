@@ -157,7 +157,13 @@ IMPLEMENTATION SPECIFIC FUNCTIONS
 ====================================================================
 */
 
-void		GLimp_Init( qboolean fixedFunction );
+typedef enum {
+	GLCONTEXT_GL1,		// OpenGL 1.1 fixed function pipeline (renderergl1)
+	GLCONTEXT_GL2,		// OpenGL 2.0+, 3.2 core or OpenGL ES 2.0+ (renderergl2)
+	GLCONTEXT_GLES2		// OpenGL ES 2.0+ only, programmable pipeline (renderergles2)
+} glContextType_t;
+
+void		GLimp_Init( glContextType_t contextType );
 void		GLimp_Shutdown( void );
 void		GLimp_EndFrame( void );
 
