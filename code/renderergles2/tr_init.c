@@ -31,6 +31,9 @@ qboolean    haveClampToEdge = qfalse;
 
 glstate_t	glState;
 
+// OpenGL ES can only read back the depth buffer with GL_NV_read_depth (flares)
+qboolean	glReadDepthAvailable;
+
 static void GfxInfo_f( void );
 
 cvar_t	*r_flareSize;
@@ -99,7 +102,7 @@ cvar_t	*r_logFile;
 cvar_t	*r_stencilbits;
 cvar_t	*r_depthbits;
 cvar_t	*r_colorbits;
-cvar_t	*r_primitives;
+cvar_t	*r_vbo;
 cvar_t	*r_texturebits;
 cvar_t  *r_ext_multisample;
 
@@ -166,6 +169,26 @@ cvar_t	*r_maxpolyverts;
 int		max_polyverts;
 
 /*
+** R_HasExtension
+**
+** Whole word search in the extension string
+*/
+static qboolean R_HasExtension( const char *name )
+{
+	const char	*ext = glConfig.extensions_string;
+	int			len = strlen( name );
+
+	while ( ( ext = strstr( ext, name ) ) != NULL )
+	{
+		if ( ( ext == glConfig.extensions_string || ext[-1] == ' ' ) && ( ext[len] == ' ' || ext[len] == '\0' ) )
+			return qtrue;
+		ext += len;
+	}
+
+	return qfalse;
+}
+
+/*
 ** InitOpenGL
 **
 ** This function is responsible for initializing a valid OpenGL subsystem.  This
@@ -190,8 +213,7 @@ static void InitOpenGL( void )
 	{
 		GLint		temp;
 		
-		// TODO: switch to GLCONTEXT_GLES2 once the fixed function pipeline is removed
-		GLimp_Init( GLCONTEXT_GL1 );
+		GLimp_Init( GLCONTEXT_GLES2 );
 
 		// OpenGL driver constants
 		qglGetIntegerv( GL_MAX_TEXTURE_SIZE, &temp );
@@ -202,6 +224,19 @@ static void InitOpenGL( void )
 		{
 			glConfig.maxTextureSize = 0;
 		}
+
+		// the generic program samples at most two textures, every
+		// OpenGL ES 2.0 implementation has at least eight units
+		qglGetIntegerv( GL_MAX_TEXTURE_IMAGE_UNITS, &temp );
+		glConfig.numTextureUnits = MIN( temp, 2 );
+
+		// texture environments are done in GLSL
+		glConfig.textureEnvAddAvailable = qtrue;
+
+		glReadDepthAvailable = R_HasExtension( "GL_NV_read_depth" );
+
+		R_InitVertexStream();
+		GLSL_Init();
 	}
 
 	// set default state
@@ -363,22 +398,34 @@ byte *RB_ReadPixels(int x, int y, int width, int height, size_t *offset, int *pa
 {
 	byte *buffer, *bufstart;
 	int padwidth, linelen;
+	int yin, xin, xout;
 	GLint packAlign;
-	
+
 	qglGetIntegerv(GL_PACK_ALIGNMENT, &packAlign);
-	
-	linelen = width * 3;
+
+	// OpenGL ES is only required to support reading GL_RGBA
+	linelen = width * 4;
 	padwidth = PAD(linelen, packAlign);
-	
+
 	// Allocate a few more bytes so that we can choose an alignment we like
 	buffer = ri.Hunk_AllocateTempMemory(padwidth * height + *offset + packAlign - 1);
-	
+
 	bufstart = PADP((intptr_t) buffer + *offset, packAlign);
-	qglReadPixels(x, y, width, height, GL_RGB, GL_UNSIGNED_BYTE, bufstart);
-	
+	qglReadPixels(x, y, width, height, GL_RGBA, GL_UNSIGNED_BYTE, bufstart);
+
+	// Convert RGBA to RGB, in place, line by line
+	linelen = width * 3;
+	for (yin = 0; yin < height; yin++) {
+		for (xin = 0, xout = 0; xout < linelen; xin += 4, xout += 3) {
+			bufstart[yin*padwidth + xout + 0] = bufstart[yin*padwidth + xin + 0];
+			bufstart[yin*padwidth + xout + 1] = bufstart[yin*padwidth + xin + 1];
+			bufstart[yin*padwidth + xout + 2] = bufstart[yin*padwidth + xin + 2];
+		}
+	}
+
 	*offset = bufstart - buffer;
 	*padlen = padwidth - linelen;
-	
+
 	return buffer;
 }
 
@@ -755,25 +802,30 @@ const void *RB_TakeVideoFrameCmd( const void *data )
 	const videoFrameCommand_t	*cmd;
 	byte				*cBuf;
 	size_t				memcount, linelen;
-	int				padwidth, avipadwidth, padlen, avipadlen;
+	int				padwidth, avipadwidth, padlen, avipadlen, avilinelen;
 	GLint packAlign;
 	
 	cmd = (const videoFrameCommand_t *)data;
-	
+
 	qglGetIntegerv(GL_PACK_ALIGNMENT, &packAlign);
 
-	linelen = cmd->width * 3;
+	// OpenGL ES is only required to support reading GL_RGBA,
+	// the capture buffer is large enough for it (see cl_avi.c)
+	linelen = cmd->width * 4;
 
 	// Alignment stuff for glReadPixels
 	padwidth = PAD(linelen, packAlign);
 	padlen = padwidth - linelen;
+
+	avilinelen = cmd->width * 3;
+
 	// AVI line padding
-	avipadwidth = PAD(linelen, AVI_LINE_PADDING);
-	avipadlen = avipadwidth - linelen;
+	avipadwidth = PAD(avilinelen, AVI_LINE_PADDING);
+	avipadlen = avipadwidth - avilinelen;
 
 	cBuf = PADP(cmd->captureBuffer, packAlign);
-		
-	qglReadPixels(0, 0, cmd->width, cmd->height, GL_RGB,
+
+	qglReadPixels(0, 0, cmd->width, cmd->height, GL_RGBA,
 		GL_UNSIGNED_BYTE, cBuf);
 
 	memcount = padwidth * cmd->height;
@@ -784,7 +836,21 @@ const void *RB_TakeVideoFrameCmd( const void *data )
 
 	if(cmd->motionJpeg)
 	{
-		memcount = RE_SaveJPGToBuffer(cmd->encodeBuffer, linelen * cmd->height,
+		int yin, xin, xout;
+
+		// Convert RGBA to RGB, in place, line by line
+		linelen = cmd->width * 3;
+		padlen = padwidth - linelen;
+
+		for (yin = 0; yin < cmd->height; yin++) {
+			for (xin = 0, xout = 0; xout < linelen; xin += 4, xout += 3) {
+				cBuf[yin*padwidth + xout + 0] = cBuf[yin*padwidth + xin + 0];
+				cBuf[yin*padwidth + xout + 1] = cBuf[yin*padwidth + xin + 1];
+				cBuf[yin*padwidth + xout + 2] = cBuf[yin*padwidth + xin + 2];
+			}
+		}
+
+		memcount = RE_SaveJPGToBuffer(cmd->encodeBuffer, avilinelen * cmd->height,
 			r_aviMotionJpegQuality->integer,
 			cmd->width, cmd->height, cBuf, padlen);
 		ri.CL_WriteAVIVideoFrame(cmd->encodeBuffer, memcount);
@@ -793,12 +859,12 @@ const void *RB_TakeVideoFrameCmd( const void *data )
 	{
 		byte *lineend, *memend;
 		byte *srcptr, *destptr;
-	
+
 		srcptr = cBuf;
 		destptr = cmd->encodeBuffer;
 		memend = srcptr + memcount;
-		
-		// swap R and B and remove line paddings
+
+		// swap R and B, drop alpha and remove line paddings
 		while(srcptr < memend)
 		{
 			lineend = srcptr + linelen;
@@ -807,19 +873,19 @@ const void *RB_TakeVideoFrameCmd( const void *data )
 				*destptr++ = srcptr[2];
 				*destptr++ = srcptr[1];
 				*destptr++ = srcptr[0];
-				srcptr += 3;
+				srcptr += 4;
 			}
-			
+
 			Com_Memset(destptr, '\0', avipadlen);
 			destptr += avipadlen;
-			
+
 			srcptr += padlen;
 		}
-		
+
 		ri.CL_WriteAVIVideoFrame(cmd->encodeBuffer, avipadwidth * cmd->height);
 	}
 
-	return (const void *)(cmd + 1);	
+	return (const void *)(cmd + 1);
 }
 
 //============================================================================
@@ -829,39 +895,36 @@ const void *RB_TakeVideoFrameCmd( const void *data )
 */
 void GL_SetDefaultState( void )
 {
+	float identity[16];
+
 	qglClearDepth( 1.0f );
 
 	qglCullFace(GL_FRONT);
 
-	qglColor4f (1,1,1,1);
-
-	// initialize downstream texture unit if we're running
-	// in a multitexture environment
-	if ( qglActiveTextureARB ) {
-		GL_SelectTexture( 1 );
-		GL_TextureMode( r_textureMode->string );
-		GL_TexEnv( GL_MODULATE );
-		qglDisable( GL_TEXTURE_2D );
-		GL_SelectTexture( 0 );
-	}
-
-	qglEnable(GL_TEXTURE_2D);
+	// initialize the lightmap texture unit
+	GL_SelectTexture( 1 );
 	GL_TextureMode( r_textureMode->string );
-	GL_TexEnv( GL_MODULATE );
+	GL_SelectTexture( 0 );
+	GL_TextureMode( r_textureMode->string );
 
-	qglShadeModel( GL_SMOOTH );
 	qglDepthFunc( GL_LEQUAL );
 
-	// the vertex array is always enabled, but the color and texture
-	// arrays are enabled and disabled around the compiled vertex array call
-	qglEnableClientState (GL_VERTEX_ARRAY);
+	// 16 bit texture rows and RGB readbacks aren't 4 byte aligned
+	qglPixelStorei( GL_UNPACK_ALIGNMENT, 1 );
+
+	// vertex arrays are enabled as needed by GLSL_VertexAttribsState()
+	GLSL_VertexAttribsState( 0 );
+	GLSL_SetConstantColor( 1, 1, 1, 1 );
+
+	Mat4Identity( identity );
+	GL_SetProjectionMatrix( identity );
+	GL_SetModelViewMatrix( identity );
 
 	//
 	// make sure our GL state vector is set correctly
 	//
 	glState.glStateBits = GLS_DEPTHTEST_DISABLE | GLS_DEPTHMASK_TRUE;
 
-	qglPolygonMode (GL_FRONT_AND_BACK, GL_FILL);
 	qglDepthMask( GL_TRUE );
 	qglDisable( GL_DEPTH_TEST );
 	qglEnable( GL_SCISSOR_TEST );
@@ -951,36 +1014,12 @@ void GfxInfo_f( void )
 		ri.Printf( PRINT_ALL, "GAMMA: software w/ %d overbright bits\n", tr.overbrightBits );
 	}
 
-	// rendering primitives
-	{
-		int		primitives;
-
-		// default is to use triangles if compiled vertex arrays are present
-		ri.Printf( PRINT_ALL, "rendering primitives: " );
-		primitives = r_primitives->integer;
-		if ( primitives == 0 ) {
-			if ( qglLockArraysEXT ) {
-				primitives = 2;
-			} else {
-				primitives = 1;
-			}
-		}
-		if ( primitives == -1 ) {
-			ri.Printf( PRINT_ALL, "none\n" );
-		} else if ( primitives == 2 ) {
-			ri.Printf( PRINT_ALL, "single glDrawElements\n" );
-		} else if ( primitives == 1 ) {
-			ri.Printf( PRINT_ALL, "multiple glArrayElement\n" );
-		} else if ( primitives == 3 ) {
-			ri.Printf( PRINT_ALL, "multiple glColor4ubv + glTexCoord2fv + glVertex3fv\n" );
-		}
-	}
+	ri.Printf( PRINT_ALL, "GLSL: %s\n", (char *) qglGetString( GL_SHADING_LANGUAGE_VERSION ) );
+	ri.Printf( PRINT_ALL, "vertex arrays: %s\n", r_vbo->integer ? "streaming vertex buffer objects" : "client side" );
 
 	ri.Printf( PRINT_ALL, "texturemode: %s\n", r_textureMode->string );
 	ri.Printf( PRINT_ALL, "picmip: %d\n", r_picmip->integer );
 	ri.Printf( PRINT_ALL, "texture bits: %d\n", r_texturebits->integer );
-	ri.Printf( PRINT_ALL, "multitexture: %s\n", enablestrings[qglActiveTextureARB != 0] );
-	ri.Printf( PRINT_ALL, "compiled vertex arrays: %s\n", enablestrings[qglLockArraysEXT != 0 ] );
 	ri.Printf( PRINT_ALL, "texenv add: %s\n", enablestrings[glConfig.textureEnvAddAvailable != 0] );
 	ri.Printf( PRINT_ALL, "compressed textures: %s\n", enablestrings[glConfig.textureCompression!=TC_NONE] );
 	if ( r_vertexLight->integer || glConfig.hardwareType == GLHW_PERMEDIA2 )
@@ -1085,7 +1124,8 @@ void R_Register( void )
 	r_railCoreWidth = ri.Cvar_Get( "r_railCoreWidth", "6", CVAR_ARCHIVE );
 	r_railSegmentLength = ri.Cvar_Get( "r_railSegmentLength", "32", CVAR_ARCHIVE );
 
-	r_primitives = ri.Cvar_Get( "r_primitives", "0", CVAR_ARCHIVE );
+	r_vbo = ri.Cvar_Get( "r_vbo", "0", CVAR_ARCHIVE | CVAR_LATCH );
+	ri.Cvar_SetDescription( r_vbo, "Stream vertexes through buffer objects instead of client side arrays (always on with WebGL)" );
 
 	r_ambientScale = ri.Cvar_Get( "r_ambientScale", "0.6", CVAR_CHEAT );
 	r_directedScale = ri.Cvar_Get( "r_directedScale", "1", CVAR_CHEAT );
@@ -1283,6 +1323,9 @@ void RE_Shutdown( qboolean destroyWindow ) {
 
 	// shut down platform specific OpenGL stuff
 	if ( destroyWindow ) {
+		GLSL_Shutdown();
+		R_ShutdownVertexStream();
+
 		GLimp_Shutdown();
 
 		Com_Memset( &glConfig, 0, sizeof( glConfig ) );

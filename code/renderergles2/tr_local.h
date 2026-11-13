@@ -32,11 +32,11 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #include "../renderercommon/iqm.h"
 #include "../renderercommon/qgl.h"
 
+// OpenGL ES 2.0 only: the fixed function entry points are deliberately
+// not declared, so any use of them is a compile error
 #define GLE(ret, name, ...) extern name##proc * qgl##name;
 QGL_1_1_PROCS;
-QGL_1_1_FIXED_FUNCTION_PROCS;
 QGL_DESKTOP_1_1_PROCS;
-QGL_DESKTOP_1_1_FIXED_FUNCTION_PROCS;
 QGL_ES_1_1_PROCS;
 QGL_1_3_PROCS;
 QGL_1_5_PROCS;
@@ -44,8 +44,17 @@ QGL_2_0_PROCS;
 QGL_3_0_PROCS;
 #undef GLE
 
-#define GL_INDEX_TYPE		GL_UNSIGNED_INT
-typedef unsigned int glIndex_t;
+// legacy extension entry points from qgl.h that don't exist in OpenGL ES 2.0
+#define qglActiveTextureARB			qglActiveTextureARB_not_available_in_GLES2
+#define qglClientActiveTextureARB	qglClientActiveTextureARB_not_available_in_GLES2
+#define qglMultiTexCoord2fARB		qglMultiTexCoord2fARB_not_available_in_GLES2
+#define qglLockArraysEXT			qglLockArraysEXT_not_available_in_GLES2
+#define qglUnlockArraysEXT			qglUnlockArraysEXT_not_available_in_GLES2
+
+// OpenGL ES 2.0 (and the Raspberry Pi 3 GPU) only support 16 bit indexes;
+// a batch never has more than SHADER_MAX_VERTEXES (1000) vertexes
+#define GL_INDEX_TYPE		GL_UNSIGNED_SHORT
+typedef unsigned short glIndex_t;
 
 // 14 bits
 // can't be increased without changing bit packing for drawsurfs
@@ -885,7 +894,6 @@ typedef struct {
 	int			currenttextures[2];
 	int			currenttmu;
 	qboolean	finishCalled;
-	int			texEnv[2];
 	int			faceCulling;
 	unsigned long	glStateBits;
 
@@ -1027,6 +1035,7 @@ typedef struct {
 extern backEndState_t	backEnd;
 extern trGlobals_t	tr;
 extern glstate_t	glState;		// outside of TR since it shouldn't be cleared during ref re-init
+extern qboolean		glReadDepthAvailable;
 
 //
 // cvars
@@ -1054,7 +1063,7 @@ extern cvar_t	*r_measureOverdraw;		// enables stencil buffer overdraw measuremen
 extern cvar_t	*r_lodbias;				// push/pull LOD transitions
 extern cvar_t	*r_lodscale;
 
-extern cvar_t	*r_primitives;			// "0" = based on compiled vertex array existence
+extern cvar_t	*r_vbo;					// stream vertexes through buffer objects
 										// "1" = glDrawElemet tristrips
 										// "2" = glDrawElements triangles
 										// "-1" = no drawing
@@ -1173,7 +1182,6 @@ void	GL_SelectTexture( int unit );
 void	GL_TextureMode( const char *string );
 void	GL_CheckErrors( void );
 void	GL_State( unsigned long stateVector );
-void	GL_TexEnv( int env );
 void	GL_Cull( int cullType );
 
 #define GLS_SRCBLEND_ZERO						0x00000001
@@ -1656,7 +1664,15 @@ size_t RE_SaveJPGToBuffer(byte *buffer, size_t bufSize, int quality,
 void RE_TakeVideoFrame( int width, int height,
 		byte *captureBuffer, byte *encodeBuffer, qboolean motionJpeg );
 
-void R_DrawElements( int numIndexes, const glIndex_t *indexes );
+void R_InitVertexStream( void );
+void R_ShutdownVertexStream( void );
+void R_BeginVertexBatch( void );
+void R_VertexAttribArray( attribIndex_t attrib, int size, GLenum type, int stride, const void *data, int numVertexes, qboolean batchConstant );
+void R_DrawElementsMode( GLenum mode, int numIndexes, const glIndex_t *indexes, int texKey );
+void R_DrawElements( int numIndexes, const glIndex_t *indexes, int texKey );
+void R_DrawArrays( GLenum mode, int numVertexes, int texKey );
+void RB_DrawImmediate( GLenum mode, int numVertexes, const vec3_t *xyz, const vec2_t *st );
+void RB_DrawQuad2D( float x, float y, float w, float h, float s1, float t1, float s2, float t2 );
 void VectorArrayNormalize( vec4_t *normals, unsigned int count );
 
 /*
@@ -1674,6 +1690,10 @@ int GLSL_KeyForStateBits( unsigned long stateBits );
 shaderProgram_t *GLSL_BindProgram( int key );
 void GLSL_VertexAttribsState( unsigned int attribBits );
 void GLSL_SetConstantColor( float r, float g, float b, float a );
+
+#define DotProduct4(a,b)		((a)[0]*(b)[0] + (a)[1]*(b)[1] + (a)[2]*(b)[2] + (a)[3]*(b)[3])
+#define VectorScale4(a,b,c)		((c)[0]=(a)[0]*(b),(c)[1]=(a)[1]*(b),(c)[2]=(a)[2]*(b),(c)[3]=(a)[3]*(b))
+#define SGN(x)					(((x) >= 0) ? !!(x) : -1)
 
 void Mat4Identity( float *m );
 void Mat4Copy( const float *in, float *out );

@@ -199,6 +199,10 @@ void R_ImageList_f( void ) {
 				estSize /= 2;
 				break;
 			case GL_RGBA4:
+				format = "RGBA4";
+				// 2 bytes per pixel
+				estSize *= 2;
+				break;
 			case GL_RGBA8:
 			case GL_RGBA:
 				format = "RGBA ";
@@ -211,6 +215,10 @@ void R_ImageList_f( void ) {
 				// 1 byte per pixel?
 				break;
 			case GL_RGB5:
+				format = "RGB5 ";
+				// 2 bytes per pixel
+				estSize *= 2;
+				break;
 			case GL_RGB8:
 			case GL_RGB:
 				format = "RGB  ";
@@ -550,6 +558,49 @@ Upload32
 
 ===============
 */
+/*
+===============
+R_UploadImageLevel
+
+OpenGL ES requires the internal format to match the data format, so
+textures are uploaded as 32 bit RGBA or converted on the CPU to 16 bit
+RGB565 / RGBA4444 (r_texturebits 16), which halves memory and bandwidth.
+
+uploadFormat is GL_RGBA8, GL_RGB5 (RGB565) or GL_RGBA4 (RGBA4444).
+===============
+*/
+static void R_UploadImageLevel( int level, int width, int height, const byte *data, GLenum uploadFormat )
+{
+	unsigned short	*packed;
+	int				i, c;
+
+	if ( uploadFormat == GL_RGBA8 )
+	{
+		qglTexImage2D( GL_TEXTURE_2D, level, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, data );
+		return;
+	}
+
+	c = width * height;
+	packed = ri.Hunk_AllocateTempMemory( c * sizeof( *packed ) );
+
+	if ( uploadFormat == GL_RGB5 )
+	{
+		for ( i = 0; i < c; i++, data += 4 )
+			packed[i] = ( ( data[0] >> 3 ) << 11 ) | ( ( data[1] >> 2 ) << 5 ) | ( data[2] >> 3 );
+
+		qglTexImage2D( GL_TEXTURE_2D, level, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, packed );
+	}
+	else
+	{
+		for ( i = 0; i < c; i++, data += 4 )
+			packed[i] = ( ( data[0] >> 4 ) << 12 ) | ( ( data[1] >> 4 ) << 8 ) | ( ( data[2] >> 4 ) << 4 ) | ( data[3] >> 4 );
+
+		qglTexImage2D( GL_TEXTURE_2D, level, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_SHORT_4_4_4_4, packed );
+	}
+
+	ri.Hunk_FreeTempMemory( packed );
+}
+
 static void Upload32( unsigned *data, 
 						  int width, int height, 
 						  qboolean mipmap, 
@@ -566,7 +617,6 @@ static void Upload32( unsigned *data,
 	int			i, c;
 	byte		*scan;
 	GLenum		internalFormat = GL_RGB;
-	float		rMax = 0, gMax = 0, bMax = 0;
 
 	//
 	// convert to exact power of 2 sizes
@@ -648,93 +698,25 @@ static void Upload32( unsigned *data,
 		}
 	}
 
-	if(lightMap)
-	{
-		if(r_greyscale->integer)
-			internalFormat = GL_LUMINANCE;
-		else
-			internalFormat = GL_RGB;
-	}
-	else
+	// lightmaps always keep full precision, banding in them is very visible.
+	// Texture compression would require compressing on the CPU, OpenGL ES
+	// can't compress uncompressed data on upload.
+	internalFormat = GL_RGBA8;
+
+	if ( !lightMap )
 	{
 		for ( i = 0; i < c; i++ )
 		{
-			if ( scan[i*4+0] > rMax )
-			{
-				rMax = scan[i*4+0];
-			}
-			if ( scan[i*4+1] > gMax )
-			{
-				gMax = scan[i*4+1];
-			}
-			if ( scan[i*4+2] > bMax )
-			{
-				bMax = scan[i*4+2];
-			}
-			if ( scan[i*4 + 3] != 255 ) 
+			if ( scan[i*4 + 3] != 255 )
 			{
 				samples = 4;
 				break;
 			}
 		}
-		// select proper internal format
-		if ( samples == 3 )
+
+		if ( r_texturebits->integer == 16 )
 		{
-			if(r_greyscale->integer)
-			{
-				if(r_texturebits->integer == 16 || r_texturebits->integer == 32)
-					internalFormat = GL_LUMINANCE8;
-				else
-					internalFormat = GL_LUMINANCE;
-			}
-			else
-			{
-				if ( allowCompression && glConfig.textureCompression == TC_S3TC_ARB )
-				{
-					internalFormat = GL_COMPRESSED_RGBA_S3TC_DXT1_EXT;
-				}
-				else if ( allowCompression && glConfig.textureCompression == TC_S3TC )
-				{
-					internalFormat = GL_RGB4_S3TC;
-				}
-				else if ( r_texturebits->integer == 16 )
-				{
-					internalFormat = GL_RGB5;
-				}
-				else if ( r_texturebits->integer == 32 )
-				{
-					internalFormat = GL_RGB8;
-				}
-				else
-				{
-					internalFormat = GL_RGB;
-				}
-			}
-		}
-		else if ( samples == 4 )
-		{
-			if(r_greyscale->integer)
-			{
-				if(r_texturebits->integer == 16 || r_texturebits->integer == 32)
-					internalFormat = GL_LUMINANCE8_ALPHA8;
-				else
-					internalFormat = GL_LUMINANCE_ALPHA;
-			}
-			else
-			{
-				if ( r_texturebits->integer == 16 )
-				{
-					internalFormat = GL_RGBA4;
-				}
-				else if ( r_texturebits->integer == 32 )
-				{
-					internalFormat = GL_RGBA8;
-				}
-				else
-				{
-					internalFormat = GL_RGBA;
-				}
-			}
+			internalFormat = ( samples == 4 ) ? GL_RGBA4 : GL_RGB5;
 		}
 	}
 
@@ -743,7 +725,7 @@ static void Upload32( unsigned *data,
 		( scaled_height == height ) ) {
 		if (!mipmap)
 		{
-			qglTexImage2D (GL_TEXTURE_2D, 0, internalFormat, scaled_width, scaled_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
+			R_UploadImageLevel( 0, scaled_width, scaled_height, (byte *)data, internalFormat );
 			*pUploadWidth = scaled_width;
 			*pUploadHeight = scaled_height;
 			*format = internalFormat;
@@ -775,7 +757,7 @@ static void Upload32( unsigned *data,
 	*pUploadHeight = scaled_height;
 	*format = internalFormat;
 
-	qglTexImage2D (GL_TEXTURE_2D, 0, internalFormat, scaled_width, scaled_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, scaledBuffer );
+	R_UploadImageLevel( 0, scaled_width, scaled_height, (byte *)scaledBuffer, internalFormat );
 
 	if (mipmap)
 	{
@@ -797,7 +779,7 @@ static void Upload32( unsigned *data,
 				R_BlendOverTexture( (byte *)scaledBuffer, scaled_width * scaled_height, mipBlendColors[miplevel] );
 			}
 
-			qglTexImage2D (GL_TEXTURE_2D, miplevel, internalFormat, scaled_width, scaled_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, scaledBuffer );
+			R_UploadImageLevel( miplevel, scaled_width, scaled_height, (byte *)scaledBuffer, internalFormat );
 		}
 	}
 done:
@@ -866,20 +848,18 @@ image_t *R_CreateImage( const char *name, byte *pic, int width, int height,
 	image->width = width;
 	image->height = height;
 	if (flags & IMGFLAG_CLAMPTOEDGE)
-		glWrapClampMode = haveClampToEdge ? GL_CLAMP_TO_EDGE : GL_CLAMP;
+		glWrapClampMode = GL_CLAMP_TO_EDGE;
 	else
 		glWrapClampMode = GL_REPEAT;
 
 	// lightmaps are always allocated on TMU 1
-	if ( qglActiveTextureARB && isLightmap ) {
+	if ( isLightmap ) {
 		image->TMU = 1;
 	} else {
 		image->TMU = 0;
 	}
 
-	if ( qglActiveTextureARB ) {
-		GL_SelectTexture( image->TMU );
-	}
+	GL_SelectTexture( image->TMU );
 
 	GL_Bind(image);
 
@@ -1372,14 +1352,10 @@ void R_DeleteTextures( void ) {
 	tr.numImages = 0;
 
 	Com_Memset( glState.currenttextures, 0, sizeof( glState.currenttextures ) );
-	if ( qglActiveTextureARB ) {
-		GL_SelectTexture( 1 );
-		qglBindTexture( GL_TEXTURE_2D, 0 );
-		GL_SelectTexture( 0 );
-		qglBindTexture( GL_TEXTURE_2D, 0 );
-	} else {
-		qglBindTexture( GL_TEXTURE_2D, 0 );
-	}
+	GL_SelectTexture( 1 );
+	qglBindTexture( GL_TEXTURE_2D, 0 );
+	GL_SelectTexture( 0 );
+	qglBindTexture( GL_TEXTURE_2D, 0 );
 }
 
 /*

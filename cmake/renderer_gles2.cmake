@@ -29,6 +29,7 @@ set(RENDERER_GLES2_SOURCES
     ${SOURCE_DIR}/renderergles2/tr_shadows.c
     ${SOURCE_DIR}/renderergles2/tr_sky.c
     ${SOURCE_DIR}/renderergles2/tr_surface.c
+    ${SOURCE_DIR}/renderergles2/tr_vbo.c
     ${SOURCE_DIR}/renderergles2/tr_world.c
 )
 

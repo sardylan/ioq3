@@ -458,8 +458,21 @@ void RB_RenderFlares (void) {
 	flare_t		*f;
 	flare_t		**prev;
 	qboolean	draw;
+	float		oldProjection[16], oldModelView[16], matrix[16];
 
 	if ( !r_flares->integer ) {
+		return;
+	}
+
+	// flare visibility is tested by reading back the depth buffer,
+	// OpenGL ES 2.0 can only do that with GL_NV_read_depth
+	if ( !glReadDepthAvailable ) {
+		static qboolean warned = qfalse;
+
+		if ( !warned ) {
+			ri.Printf( PRINT_WARNING, "r_flares needs GL_NV_read_depth, which is not available\n" );
+			warned = qtrue;
+		}
 		return;
 	}
 
@@ -511,18 +524,15 @@ void RB_RenderFlares (void) {
 		return;		// none visible
 	}
 
-	if ( backEnd.viewParms.isPortal ) {
-		qglDisable (GL_CLIP_PLANE0);
-	}
+	Mat4Copy( glState.projection, oldProjection );
+	Mat4Copy( glState.modelView, oldModelView );
 
-	qglPushMatrix();
-    qglLoadIdentity();
-	qglMatrixMode( GL_PROJECTION );
-	qglPushMatrix();
-    qglLoadIdentity();
-	qglOrtho( backEnd.viewParms.viewportX, backEnd.viewParms.viewportX + backEnd.viewParms.viewportWidth,
+	Mat4Identity( matrix );
+	GL_SetModelViewMatrix( matrix );
+	Mat4Ortho( backEnd.viewParms.viewportX, backEnd.viewParms.viewportX + backEnd.viewParms.viewportWidth,
 			  backEnd.viewParms.viewportY, backEnd.viewParms.viewportY + backEnd.viewParms.viewportHeight,
-			  -99999, 99999 );
+			  -99999, 99999, matrix );
+	GL_SetProjectionMatrix( matrix );
 
 	for ( f = r_activeFlares ; f ; f = f->next ) {
 		if ( f->frameSceneNum == backEnd.viewParms.frameSceneNum
@@ -532,8 +542,7 @@ void RB_RenderFlares (void) {
 		}
 	}
 
-	qglPopMatrix();
-	qglMatrixMode( GL_MODELVIEW );
-	qglPopMatrix();
+	GL_SetProjectionMatrix( oldProjection );
+	GL_SetModelViewMatrix( oldModelView );
 }
 

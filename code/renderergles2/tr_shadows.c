@@ -59,49 +59,38 @@ void R_AddEdgeDef( int i1, int i2, int localFacing ) {
 	numEdgeDefs[ i1 ]++;
 }
 
-void R_RenderShadowEdges( void ) {
-	int		i;
+/*
+=================
+R_BuildShadowEdges
 
-#if 0
-	int		numTris;
+Builds triangles for the sides of the shadow volume: vertexes
+[0, numVertexes) are tess.xyz, [numVertexes, 2 * numVertexes) are
+the projected shadowXyz. Returns the number of indexes.
+=================
+*/
+static vec3_t		shadowVolumeXyz[SHADER_MAX_VERTEXES * 2];
+static glIndex_t	shadowVolumeIndexes[SHADER_MAX_INDEXES * 6];
 
-	// dumb way -- render every triangle's edges
-	numTris = tess.numIndexes / 3;
-
-	for ( i = 0 ; i < numTris ; i++ ) {
-		int		i1, i2, i3;
-
-		if ( !facing[i] ) {
-			continue;
-		}
-
-		i1 = tess.indexes[ i*3 + 0 ];
-		i2 = tess.indexes[ i*3 + 1 ];
-		i3 = tess.indexes[ i*3 + 2 ];
-
-		qglBegin( GL_TRIANGLE_STRIP );
-		qglVertex3fv( tess.xyz[ i1 ] );
-		qglVertex3fv( shadowXyz[ i1 ] );
-		qglVertex3fv( tess.xyz[ i2 ] );
-		qglVertex3fv( shadowXyz[ i2 ] );
-		qglVertex3fv( tess.xyz[ i3 ] );
-		qglVertex3fv( shadowXyz[ i3 ] );
-		qglVertex3fv( tess.xyz[ i1 ] );
-		qglVertex3fv( shadowXyz[ i1 ] );
-		qglEnd();
-	}
-#else
+static int R_BuildShadowEdges( void ) {
+	int		i, numIndexes, numVertexes;
 	int		c, c2;
 	int		j, k;
 	int		i2;
 	int		hit[2];
+
+	numVertexes = tess.numVertexes;
+	for ( i = 0 ; i < numVertexes ; i++ ) {
+		VectorCopy( tess.xyz[ i ], shadowVolumeXyz[ i ] );
+		VectorCopy( shadowXyz[ i ], shadowVolumeXyz[ numVertexes + i ] );
+	}
 
 	// an edge is NOT a silhouette edge if its face doesn't face the light,
 	// or if it has a reverse paired edge that also faces the light.
 	// A well behaved polyhedron would have exactly two faces for each edge,
 	// but lots of models have dangling edges or overfanned edges
 
-	for ( i = 0 ; i < tess.numVertexes ; i++ ) {
+	numIndexes = 0;
+	for ( i = 0 ; i < numVertexes ; i++ ) {
 		c = numEdgeDefs[ i ];
 		for ( j = 0 ; j < c ; j++ ) {
 			if ( !edgeDefs[ i ][ j ].facing ) {
@@ -122,16 +111,19 @@ void R_RenderShadowEdges( void ) {
 			// if it doesn't share the edge with another front facing
 			// triangle, it is a sil edge
 			if ( hit[ 1 ] == 0 ) {
-				qglBegin( GL_TRIANGLE_STRIP );
-				qglVertex3fv( tess.xyz[ i ] );
-				qglVertex3fv( shadowXyz[ i ] );
-				qglVertex3fv( tess.xyz[ i2 ] );
-				qglVertex3fv( shadowXyz[ i2 ] );
-				qglEnd();
+				// same winding as the triangle strip
+				// tess.xyz[ i ], shadowXyz[ i ], tess.xyz[ i2 ], shadowXyz[ i2 ]
+				shadowVolumeIndexes[ numIndexes++ ] = i;
+				shadowVolumeIndexes[ numIndexes++ ] = numVertexes + i;
+				shadowVolumeIndexes[ numIndexes++ ] = i2;
+				shadowVolumeIndexes[ numIndexes++ ] = i2;
+				shadowVolumeIndexes[ numIndexes++ ] = numVertexes + i;
+				shadowVolumeIndexes[ numIndexes++ ] = numVertexes + i2;
 			}
 		}
 	}
-#endif
+
+	return numIndexes;
 }
 
 /*
@@ -149,10 +141,11 @@ triangleFromEdge[ v1 ][ v2 ]
 void RB_ShadowTessEnd( void ) {
 	int		i;
 	int		numTris;
+	int		numShadowIndexes;
 	vec3_t	lightDir;
 	GLboolean rgba[4];
 
-	if ( glConfig.stencilBits < 4 ) {
+	if ( glConfig.stencilBits < 4 || tess.numVertexes <= 0 ) {
 		return;
 	}
 
@@ -199,10 +192,17 @@ void RB_ShadowTessEnd( void ) {
 	}
 
 	// draw the silhouette edges
+	numShadowIndexes = R_BuildShadowEdges();
+	if ( !numShadowIndexes ) {
+		return;
+	}
 
-	GL_Bind( tr.whiteImage );
+	R_BeginVertexBatch();
+	R_VertexAttribArray( ATTR_INDEX_POSITION, 3, GL_FLOAT, 0, shadowVolumeXyz, tess.numVertexes * 2, qtrue );
+	GLSL_VertexAttribsState( ATTR_POSITION );
+
 	GL_State( GLS_SRCBLEND_ONE | GLS_DSTBLEND_ZERO );
-	qglColor3f( 0.2f, 0.2f, 0.2f );
+	GLSL_SetConstantColor( 0.2f, 0.2f, 0.2f, 1.0f );
 
 	// don't write to the color buffer
 	qglGetBooleanv(GL_COLOR_WRITEMASK, rgba);
@@ -214,12 +214,12 @@ void RB_ShadowTessEnd( void ) {
 	GL_Cull( CT_BACK_SIDED );
 	qglStencilOp( GL_KEEP, GL_KEEP, GL_INCR );
 
-	R_RenderShadowEdges();
+	R_DrawElements( numShadowIndexes, shadowVolumeIndexes, 0 );
 
 	GL_Cull( CT_FRONT_SIDED );
 	qglStencilOp( GL_KEEP, GL_KEEP, GL_DECR );
 
-	R_RenderShadowEdges();
+	R_DrawElements( numShadowIndexes, shadowVolumeIndexes, 0 );
 
 
 	// reenable writing to the color buffer
@@ -244,30 +244,25 @@ void RB_ShadowFinish( void ) {
 	if ( glConfig.stencilBits < 4 ) {
 		return;
 	}
+	static const vec3_t quad[4] = {
+		{ -100, 100, -10 }, { 100, 100, -10 }, { 100, -100, -10 }, { -100, -100, -10 }
+	};
+	float identity[16];
+
 	qglEnable( GL_STENCIL_TEST );
 	qglStencilFunc( GL_NOTEQUAL, 0, 255 );
 
-	qglDisable (GL_CLIP_PLANE0);
 	GL_Cull( CT_TWO_SIDED );
 
-	GL_Bind( tr.whiteImage );
+	Mat4Identity( identity );
+	GL_SetModelViewMatrix( identity );
 
-    qglLoadIdentity ();
-
-	qglColor3f( 0.6f, 0.6f, 0.6f );
+	GLSL_SetConstantColor( 0.6f, 0.6f, 0.6f, 1.0f );
 	GL_State( GLS_DEPTHMASK_TRUE | GLS_SRCBLEND_DST_COLOR | GLS_DSTBLEND_ZERO );
 
-//	qglColor3f( 1, 0, 0 );
-//	GL_State( GLS_DEPTHMASK_TRUE | GLS_SRCBLEND_ONE | GLS_DSTBLEND_ZERO );
+	RB_DrawImmediate( GL_TRIANGLE_FAN, 4, quad, NULL );
 
-	qglBegin( GL_QUADS );
-	qglVertex3f( -100, 100, -10 );
-	qglVertex3f( 100, 100, -10 );
-	qglVertex3f( 100, -100, -10 );
-	qglVertex3f( -100, -100, -10 );
-	qglEnd ();
-
-	qglColor4f(1,1,1,1);
+	GLSL_SetConstantColor( 1, 1, 1, 1 );
 	qglDisable( GL_STENCIL_TEST );
 }
 

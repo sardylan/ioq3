@@ -25,15 +25,6 @@ backEndData_t	*backEndData;
 backEndState_t	backEnd;
 
 
-static float	s_flipMatrix[16] = {
-	// convert from our coordinate system (looking down X)
-	// to OpenGL's coordinate system (looking down -Z)
-	0, 0, -1, 0,
-	-1, 0, 0, 0,
-	0, 1, 0, 0,
-	0, 0, 0, 1
-};
-
 
 /*
 ** GL_Bind
@@ -71,22 +62,12 @@ void GL_SelectTexture( int unit )
 		return;
 	}
 
-	if ( unit == 0 )
-	{
-		qglActiveTextureARB( GL_TEXTURE0_ARB );
-		GLimp_LogComment( "glActiveTextureARB( GL_TEXTURE0_ARB )\n" );
-		qglClientActiveTextureARB( GL_TEXTURE0_ARB );
-		GLimp_LogComment( "glClientActiveTextureARB( GL_TEXTURE0_ARB )\n" );
-	}
-	else if ( unit == 1 )
-	{
-		qglActiveTextureARB( GL_TEXTURE1_ARB );
-		GLimp_LogComment( "glActiveTextureARB( GL_TEXTURE1_ARB )\n" );
-		qglClientActiveTextureARB( GL_TEXTURE1_ARB );
-		GLimp_LogComment( "glClientActiveTextureARB( GL_TEXTURE1_ARB )\n" );
-	} else {
+	if ( unit != 0 && unit != 1 ) {
 		ri.Error( ERR_DROP, "GL_SelectTexture: unit = %i", unit );
 	}
+
+	qglActiveTexture( GL_TEXTURE0 + unit );
+	GLimp_LogComment( unit ? "glActiveTexture( GL_TEXTURE1 )\n" : "glActiveTexture( GL_TEXTURE0 )\n" );
 
 	glState.currenttmu = unit;
 }
@@ -149,38 +130,6 @@ void GL_Cull( int cullType ) {
 	}
 }
 
-/*
-** GL_TexEnv
-*/
-void GL_TexEnv( int env )
-{
-	if ( env == glState.texEnv[glState.currenttmu] )
-	{
-		return;
-	}
-
-	glState.texEnv[glState.currenttmu] = env;
-
-
-	switch ( env )
-	{
-	case GL_MODULATE:
-		qglTexEnvf( GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE );
-		break;
-	case GL_REPLACE:
-		qglTexEnvf( GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE );
-		break;
-	case GL_DECAL:
-		qglTexEnvf( GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_DECAL );
-		break;
-	case GL_ADD:
-		qglTexEnvf( GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_ADD );
-		break;
-	default:
-		ri.Error( ERR_DROP, "GL_TexEnv: invalid env '%d' passed", env );
-		break;
-	}
-}
 
 /*
 ** GL_State
@@ -310,20 +259,7 @@ void GL_State( unsigned long stateBits )
 		}
 	}
 
-	//
-	// fill/line mode
-	//
-	if ( diff & GLS_POLYMODE_LINE )
-	{
-		if ( stateBits & GLS_POLYMODE_LINE )
-		{
-			qglPolygonMode( GL_FRONT_AND_BACK, GL_LINE );
-		}
-		else
-		{
-			qglPolygonMode( GL_FRONT_AND_BACK, GL_FILL );
-		}
-	}
+	// GLS_POLYMODE_LINE: OpenGL ES has no glPolygonMode, r_showtris draws lines instead
 
 	//
 	// depthtest
@@ -340,33 +276,7 @@ void GL_State( unsigned long stateBits )
 		}
 	}
 
-	//
-	// alpha test
-	//
-	if ( diff & GLS_ATEST_BITS )
-	{
-		switch ( stateBits & GLS_ATEST_BITS )
-		{
-		case 0:
-			qglDisable( GL_ALPHA_TEST );
-			break;
-		case GLS_ATEST_GT_0:
-			qglEnable( GL_ALPHA_TEST );
-			qglAlphaFunc( GL_GREATER, 0.0f );
-			break;
-		case GLS_ATEST_LT_80:
-			qglEnable( GL_ALPHA_TEST );
-			qglAlphaFunc( GL_LESS, 0.5f );
-			break;
-		case GLS_ATEST_GE_80:
-			qglEnable( GL_ALPHA_TEST );
-			qglAlphaFunc( GL_GEQUAL, 0.5f );
-			break;
-		default:
-			assert( 0 );
-			break;
-		}
-	}
+	// GLS_ATEST_BITS: the alpha test is part of the GLSL program, see R_DrawElements()
 
 	glState.glStateBits = stateBits;
 }
@@ -396,9 +306,7 @@ static void RB_Hyperspace( void ) {
 
 
 static void SetViewportAndScissor( void ) {
-	qglMatrixMode(GL_PROJECTION);
-	qglLoadMatrixf( backEnd.viewParms.projectionMatrix );
-	qglMatrixMode(GL_MODELVIEW);
+	GL_SetProjectionMatrix( backEnd.viewParms.projectionMatrix );
 
 	// set the window clipping
 	qglViewport( backEnd.viewParms.viewportX, backEnd.viewParms.viewportY, 
@@ -471,27 +379,8 @@ void RB_BeginDrawingView (void) {
 	// we will only draw a sun if there was sky rendered in this view
 	backEnd.skyRenderedThisView = qfalse;
 
-	// clip to the plane of the portal
-	if ( backEnd.viewParms.isPortal ) {
-		float	plane[4];
-		GLdouble	plane2[4];
-
-		plane[0] = backEnd.viewParms.portalPlane.normal[0];
-		plane[1] = backEnd.viewParms.portalPlane.normal[1];
-		plane[2] = backEnd.viewParms.portalPlane.normal[2];
-		plane[3] = backEnd.viewParms.portalPlane.dist;
-
-		plane2[0] = DotProduct (backEnd.viewParms.or.axis[0], plane);
-		plane2[1] = DotProduct (backEnd.viewParms.or.axis[1], plane);
-		plane2[2] = DotProduct (backEnd.viewParms.or.axis[2], plane);
-		plane2[3] = DotProduct (plane, backEnd.viewParms.or.origin) - plane[3];
-
-		qglLoadMatrixf( s_flipMatrix );
-		qglClipPlane (GL_CLIP_PLANE0, plane2);
-		qglEnable (GL_CLIP_PLANE0);
-	} else {
-		qglDisable (GL_CLIP_PLANE0);
-	}
+	// portal views are clipped to the portal plane by the oblique near plane
+	// of their projection matrix, see R_SetupProjectionZ()
 }
 
 
@@ -596,7 +485,7 @@ void RB_RenderDrawSurfList( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 				R_TransformDlights( backEnd.refdef.num_dlights, backEnd.refdef.dlights, &backEnd.or );
 			}
 
-			qglLoadMatrixf( backEnd.or.modelMatrix );
+			GL_SetModelViewMatrix( backEnd.or.modelMatrix );
 
 			//
 			// change depthrange. Also change projection matrix so first person weapon does not look like coming
@@ -613,9 +502,7 @@ void RB_RenderDrawSurfList( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 							if(oldDepthRange)
 							{
 								// was not a crosshair but now is, change back proj matrix
-								qglMatrixMode(GL_PROJECTION);
-								qglLoadMatrixf(backEnd.viewParms.projectionMatrix);
-								qglMatrixMode(GL_MODELVIEW);
+								GL_SetProjectionMatrix( backEnd.viewParms.projectionMatrix );
 							}
 						}
 						else
@@ -624,9 +511,7 @@ void RB_RenderDrawSurfList( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 
 							R_SetupProjection(&temp, r_znear->value, qfalse);
 
-							qglMatrixMode(GL_PROJECTION);
-							qglLoadMatrixf(temp.projectionMatrix);
-							qglMatrixMode(GL_MODELVIEW);
+							GL_SetProjectionMatrix( temp.projectionMatrix );
 						}
 					}
 
@@ -637,9 +522,7 @@ void RB_RenderDrawSurfList( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 				{
 					if(!wasCrosshair && backEnd.viewParms.stereoFrame != STEREO_CENTER)
 					{
-						qglMatrixMode(GL_PROJECTION);
-						qglLoadMatrixf(backEnd.viewParms.projectionMatrix);
-						qglMatrixMode(GL_MODELVIEW);
+						GL_SetProjectionMatrix( backEnd.viewParms.projectionMatrix );
 					}
 
 					qglDepthRange (0, 1);
@@ -664,7 +547,7 @@ void RB_RenderDrawSurfList( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 	}
 
 	// go back to the world modelview matrix
-	qglLoadMatrixf( backEnd.viewParms.world.modelMatrix );
+	GL_SetModelViewMatrix( backEnd.viewParms.world.modelMatrix );
 	if ( depthRange ) {
 		qglDepthRange (0, 1);
 	}
@@ -701,18 +584,20 @@ void	RB_SetGL2D (void) {
 	// set 2D virtual screen size
 	qglViewport( 0, 0, glConfig.vidWidth, glConfig.vidHeight );
 	qglScissor( 0, 0, glConfig.vidWidth, glConfig.vidHeight );
-	qglMatrixMode(GL_PROJECTION);
-    qglLoadIdentity ();
-	qglOrtho (0, glConfig.vidWidth, glConfig.vidHeight, 0, 0, 1);
-	qglMatrixMode(GL_MODELVIEW);
-    qglLoadIdentity ();
+	{
+		float	matrix[16];
+
+		Mat4Ortho( 0, glConfig.vidWidth, glConfig.vidHeight, 0, 0, 1, matrix );
+		GL_SetProjectionMatrix( matrix );
+		Mat4Identity( matrix );
+		GL_SetModelViewMatrix( matrix );
+	}
 
 	GL_State( GLS_DEPTHTEST_DISABLE |
 			  GLS_SRCBLEND_SRC_ALPHA |
 			  GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA );
 
 	GL_Cull( CT_TWO_SIDED );
-	qglDisable( GL_CLIP_PLANE0 );
 
 	// set time for 2D shaders
 	backEnd.refdef.time = ri.Milliseconds();
@@ -769,18 +654,9 @@ void RE_StretchRaw (int x, int y, int w, int h, int cols, int rows, const byte *
 
 	RB_SetGL2D();
 
-	qglColor3f( tr.identityLight, tr.identityLight, tr.identityLight );
+	GLSL_SetConstantColor( tr.identityLight, tr.identityLight, tr.identityLight, 1.0f );
 
-	qglBegin (GL_QUADS);
-	qglTexCoord2f ( 0.5f / cols,  0.5f / rows );
-	qglVertex2f (x, y);
-	qglTexCoord2f ( ( cols - 0.5f ) / cols ,  0.5f / rows );
-	qglVertex2f (x+w, y);
-	qglTexCoord2f ( ( cols - 0.5f ) / cols, ( rows - 0.5f ) / rows );
-	qglVertex2f (x+w, y+h);
-	qglTexCoord2f ( 0.5f / cols, ( rows - 0.5f ) / rows );
-	qglVertex2f (x, y+h);
-	qglEnd ();
+	RB_DrawQuad2D( x, y, w, h, 0.5f / cols, 0.5f / rows, ( cols - 0.5f ) / cols, ( rows - 0.5f ) / rows );
 }
 
 void RE_UploadCinematic (int w, int h, int cols, int rows, const byte *data, int client, qboolean dirty) {
@@ -791,11 +667,12 @@ void RE_UploadCinematic (int w, int h, int cols, int rows, const byte *data, int
 	if ( cols != tr.scratchImage[client]->width || rows != tr.scratchImage[client]->height ) {
 		tr.scratchImage[client]->width = tr.scratchImage[client]->uploadWidth = cols;
 		tr.scratchImage[client]->height = tr.scratchImage[client]->uploadHeight = rows;
-		qglTexImage2D( GL_TEXTURE_2D, 0, GL_RGB8, cols, rows, 0, GL_RGBA, GL_UNSIGNED_BYTE, data );
+		// OpenGL ES requires the internal format to match the data format
+		qglTexImage2D( GL_TEXTURE_2D, 0, GL_RGBA, cols, rows, 0, GL_RGBA, GL_UNSIGNED_BYTE, data );
 		qglTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR );
 		qglTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR );
-		qglTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, haveClampToEdge ? GL_CLAMP_TO_EDGE : GL_CLAMP );
-		qglTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, haveClampToEdge ? GL_CLAMP_TO_EDGE : GL_CLAMP );
+		qglTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
+		qglTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
 	} else {
 		if (dirty) {
 			// otherwise, just subimage upload it so that drivers can tell we are going to be changing
@@ -937,7 +814,8 @@ const void	*RB_DrawBuffer( const void *data ) {
 
 	cmd = (const drawBufferCommand_t *)data;
 
-	qglDrawBuffer( cmd->buffer );
+	// stereo (GL_BACK_LEFT / GL_BACK_RIGHT) buffers don't exist in OpenGL ES
+	(void)cmd;
 
 	// clear screen for debugging
 	if ( r_clear->integer ) {
@@ -989,16 +867,8 @@ void RB_ShowImages( void ) {
 		}
 
 		GL_Bind( image );
-		qglBegin (GL_QUADS);
-		qglTexCoord2f( 0, 0 );
-		qglVertex2f( x, y );
-		qglTexCoord2f( 1, 0 );
-		qglVertex2f( x + w, y );
-		qglTexCoord2f( 1, 1 );
-		qglVertex2f( x + w, y + h );
-		qglTexCoord2f( 0, 1 );
-		qglVertex2f( x, y + h );
-		qglEnd();
+		GLSL_SetConstantColor( 1, 1, 1, 1 );
+		RB_DrawQuad2D( x, y, w, h, 0, 0, 1, 1 );
 	}
 
 	qglFinish();
@@ -1066,26 +936,10 @@ const void	*RB_SwapBuffers( const void *data ) {
 
 	cmd = (const swapBuffersCommand_t *)data;
 
-	// we measure overdraw by reading back the stencil buffer and
-	// counting up the number of increments that have happened
-	if ( r_measureOverdraw->integer ) {
-		int i;
-		long sum = 0;
-		unsigned char *stencilReadback;
-
-		stencilReadback = ri.Hunk_AllocateTempMemory( glConfig.vidWidth * glConfig.vidHeight );
-		qglReadPixels( 0, 0, glConfig.vidWidth, glConfig.vidHeight, GL_STENCIL_INDEX, GL_UNSIGNED_BYTE, stencilReadback );
-
-		for ( i = 0; i < glConfig.vidWidth * glConfig.vidHeight; i++ ) {
-			sum += stencilReadback[i];
-		}
-
-		backEnd.pc.c_overDraw += sum;
-		ri.Hunk_FreeTempMemory( stencilReadback );
-	}
+	// r_measureOverdraw needs to read the stencil buffer, which OpenGL ES can't do
 
 
-	if ( !glState.finishCalled ) {
+	if ( r_finish->integer && !glState.finishCalled ) {
 		qglFinish();
 	}
 

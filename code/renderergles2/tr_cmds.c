@@ -303,36 +303,9 @@ void RE_BeginFrame( stereoFrame_t stereoFrame ) {
 	//
 	if ( r_measureOverdraw->integer )
 	{
-		if ( glConfig.stencilBits < 4 )
-		{
-			ri.Printf( PRINT_ALL, "Warning: not enough stencil bits to measure overdraw: %d\n", glConfig.stencilBits );
-			ri.Cvar_Set( "r_measureOverdraw", "0" );
-			r_measureOverdraw->modified = qfalse;
-		}
-		else if ( r_shadows->integer == 2 )
-		{
-			ri.Printf( PRINT_ALL, "Warning: stencil shadows and overdraw measurement are mutually exclusive\n" );
-			ri.Cvar_Set( "r_measureOverdraw", "0" );
-			r_measureOverdraw->modified = qfalse;
-		}
-		else
-		{
-			R_IssuePendingRenderCommands();
-			qglEnable( GL_STENCIL_TEST );
-			qglStencilMask( ~0U );
-			qglClearStencil( 0U );
-			qglStencilFunc( GL_ALWAYS, 0U, ~0U );
-			qglStencilOp( GL_KEEP, GL_INCR, GL_INCR );
-		}
-		r_measureOverdraw->modified = qfalse;
-	}
-	else
-	{
-		// this is only reached if it was on and is now off
-		if ( r_measureOverdraw->modified ) {
-			R_IssuePendingRenderCommands();
-			qglDisable( GL_STENCIL_TEST );
-		}
+		// reading back the stencil buffer isn't possible in OpenGL ES
+		ri.Printf( PRINT_WARNING, "r_measureOverdraw is not supported by the OpenGL ES 2.0 renderer\n" );
+		ri.Cvar_Set( "r_measureOverdraw", "0" );
 		r_measureOverdraw->modified = qfalse;
 	}
 

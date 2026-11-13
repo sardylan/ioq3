@@ -70,6 +70,7 @@ extern void (APIENTRYP qglUnlockArraysEXT) (void);
 	GLE(void, GetIntegerv, GLenum pname, GLint *params) \
 	GLE(const GLubyte *, GetString, GLenum name) \
 	GLE(void, LineWidth, GLfloat width) \
+	GLE(void, PixelStorei, GLenum pname, GLint param) \
 	GLE(void, PolygonOffset, GLfloat factor, GLfloat units) \
 	GLE(void, ReadPixels, GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, GLvoid *pixels) \
 	GLE(void, Scissor, GLint x, GLint y, GLsizei width, GLsizei height) \

@@ -289,6 +289,7 @@ static void RB_SurfaceBeam( void )
 	vec3_t perpvec;
 	vec3_t direction, normalized_direction;
 	vec3_t	start_points[NUM_BEAM_SEGS], end_points[NUM_BEAM_SEGS];
+	vec3_t	points[( NUM_BEAM_SEGS + 1 ) * 2];
 	vec3_t oldorigin, origin;
 
 	e = &backEnd.currentEntity->e;
@@ -319,18 +320,16 @@ static void RB_SurfaceBeam( void )
 		VectorAdd( start_points[i], direction, end_points[i] );
 	}
 
-	GL_Bind( tr.whiteImage );
-
 	GL_State( GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE );
 
-	qglColor3f( 1, 0, 0 );
+	GLSL_SetConstantColor( 1, 0, 0, 1 );
 
-	qglBegin( GL_TRIANGLE_STRIP );
 	for ( i = 0; i <= NUM_BEAM_SEGS; i++ ) {
-		qglVertex3fv( start_points[ i % NUM_BEAM_SEGS] );
-		qglVertex3fv( end_points[ i % NUM_BEAM_SEGS] );
+		VectorCopy( start_points[ i % NUM_BEAM_SEGS ], points[ i * 2 ] );
+		VectorCopy( end_points[ i % NUM_BEAM_SEGS ], points[ i * 2 + 1 ] );
 	}
-	qglEnd();
+
+	RB_DrawImmediate( GL_TRIANGLE_STRIP, ( NUM_BEAM_SEGS + 1 ) * 2, (const vec3_t *)points, NULL );
 }
 
 //================================================================================
@@ -1019,20 +1018,20 @@ Draws x/y/z lines from the origin for orientation debugging
 ===================
 */
 static void RB_SurfaceAxis( void ) {
-	GL_Bind( tr.whiteImage );
+	static const vec3_t axisLines[3][2] = {
+		{ { 0, 0, 0 }, { 16, 0, 0 } },
+		{ { 0, 0, 0 }, { 0, 16, 0 } },
+		{ { 0, 0, 0 }, { 0, 0, 16 } }
+	};
+	int i;
+
 	GL_State( GLS_DEFAULT );
 	qglLineWidth( 3 );
-	qglBegin( GL_LINES );
-	qglColor3f( 1,0,0 );
-	qglVertex3f( 0,0,0 );
-	qglVertex3f( 16,0,0 );
-	qglColor3f( 0,1,0 );
-	qglVertex3f( 0,0,0 );
-	qglVertex3f( 0,16,0 );
-	qglColor3f( 0,0,1 );
-	qglVertex3f( 0,0,0 );
-	qglVertex3f( 0,0,16 );
-	qglEnd();
+	for ( i = 0; i < 3; i++ ) {
+		GLSL_SetConstantColor( i == 0, i == 1, i == 2, 1 );
+		RB_DrawImmediate( GL_LINES, 2, axisLines[i], NULL );
+	}
+	GLSL_SetConstantColor( 1, 1, 1, 1 );
 	qglLineWidth( 1 );
 }
 
