@@ -37,6 +37,10 @@ QGL_1_1_PROCS;
 QGL_1_1_FIXED_FUNCTION_PROCS;
 QGL_DESKTOP_1_1_PROCS;
 QGL_DESKTOP_1_1_FIXED_FUNCTION_PROCS;
+QGL_ES_1_1_PROCS;
+QGL_1_3_PROCS;
+QGL_1_5_PROCS;
+QGL_2_0_PROCS;
 QGL_3_0_PROCS;
 #undef GLE
 
@@ -837,6 +841,45 @@ typedef struct {
 #define FUNCTABLE_MASK		(FUNCTABLE_SIZE-1)
 
 
+// fixed vertex attribute locations shared by all GLSL programs
+typedef enum {
+	ATTR_INDEX_POSITION,
+	ATTR_INDEX_TEXCOORD0,
+	ATTR_INDEX_TEXCOORD1,
+	ATTR_INDEX_COLOR,
+
+	ATTR_INDEX_COUNT
+} attribIndex_t;
+
+#define ATTR_POSITION		( 1 << ATTR_INDEX_POSITION )
+#define ATTR_TEXCOORD0		( 1 << ATTR_INDEX_TEXCOORD0 )
+#define ATTR_TEXCOORD1		( 1 << ATTR_INDEX_TEXCOORD1 )
+#define ATTR_COLOR			( 1 << ATTR_INDEX_COLOR )
+
+// generic program variant key bits
+#define GLSLKEY_TEXTURE0			0x01
+#define GLSLKEY_TEXTURE1			0x02
+
+#define GLSLKEY_TEXENV1_MODULATE	0x00
+#define GLSLKEY_TEXENV1_ADD			0x04
+#define GLSLKEY_TEXENV1_REPLACE		0x08
+#define GLSLKEY_TEXENV1_DECAL		0x0c
+#define GLSLKEY_TEXENV1_BITS		0x0c
+
+#define GLSLKEY_ATEST_GT_0			0x10
+#define GLSLKEY_ATEST_LT_80			0x20
+#define GLSLKEY_ATEST_GE_80			0x30
+#define GLSLKEY_ATEST_BITS			0x30
+
+#define GLSL_NUM_PROGRAMS			0x40
+
+typedef struct shaderProgram_s {
+	GLuint		program;
+	qboolean	failed;
+	GLint		u_ModelViewProjection;
+	int			matrixGeneration;	// glState.matrixGeneration last uploaded
+} shaderProgram_t;
+
 // the renderer front end should never modify glstate_t
 typedef struct {
 	int			currenttextures[2];
@@ -845,6 +888,15 @@ typedef struct {
 	int			texEnv[2];
 	int			faceCulling;
 	unsigned long	glStateBits;
+
+	// replaces the OpenGL 1.x matrix stack
+	float		projection[16];
+	float		modelView[16];
+	float		modelViewProjection[16];
+	int			matrixGeneration;
+
+	shaderProgram_t	*currentProgram;
+	unsigned int	vertexAttribsEnabled;	// ATTR_* bits
 } glstate_t;
 
 typedef struct {
@@ -1607,10 +1659,29 @@ void RE_TakeVideoFrame( int width, int height,
 void R_DrawElements( int numIndexes, const glIndex_t *indexes );
 void VectorArrayNormalize( vec4_t *normals, unsigned int count );
 
-#ifdef idppc_altivec
-void LerpMeshVertexes_altivec( md3Surface_t *surf, float backlerp );
-void ProjectDlightTexture_altivec( void );
-void RB_CalcDiffuseColor_altivec( unsigned char *colors );
-#endif
+/*
+============================================================
+
+GLSL / MATRICES
+
+============================================================
+*/
+
+void GLSL_Init( void );
+void GLSL_Shutdown( void );
+int GLSL_KeyForTexEnv( int env );
+int GLSL_KeyForStateBits( unsigned long stateBits );
+shaderProgram_t *GLSL_BindProgram( int key );
+void GLSL_VertexAttribsState( unsigned int attribBits );
+void GLSL_SetConstantColor( float r, float g, float b, float a );
+
+void Mat4Identity( float *m );
+void Mat4Copy( const float *in, float *out );
+void Mat4Multiply( const float *a, const float *b, float *out );
+void Mat4Ortho( float left, float right, float bottom, float top, float zNear, float zFar, float *out );
+void Mat4Translation( const float *in, float x, float y, float z, float *out );
+
+void GL_SetProjectionMatrix( const float *m );
+void GL_SetModelViewMatrix( const float *m );
 
 #endif //TR_LOCAL_H

@@ -6,18 +6,19 @@ include(utils/set_output_dirs)
 include(renderer_common)
 
 set(RENDERER_GLES2_SOURCES
-    ${SOURCE_DIR}/renderergles2/tr_altivec.c
     ${SOURCE_DIR}/renderergles2/tr_animation.c
     ${SOURCE_DIR}/renderergles2/tr_backend.c
     ${SOURCE_DIR}/renderergles2/tr_bsp.c
     ${SOURCE_DIR}/renderergles2/tr_cmds.c
     ${SOURCE_DIR}/renderergles2/tr_curve.c
     ${SOURCE_DIR}/renderergles2/tr_flares.c
+    ${SOURCE_DIR}/renderergles2/tr_glsl.c
     ${SOURCE_DIR}/renderergles2/tr_image.c
     ${SOURCE_DIR}/renderergles2/tr_init.c
     ${SOURCE_DIR}/renderergles2/tr_light.c
     ${SOURCE_DIR}/renderergles2/tr_main.c
     ${SOURCE_DIR}/renderergles2/tr_marks.c
+    ${SOURCE_DIR}/renderergles2/tr_matrix.c
     ${SOURCE_DIR}/renderergles2/tr_mesh.c
     ${SOURCE_DIR}/renderergles2/tr_model.c
     ${SOURCE_DIR}/renderergles2/tr_model_iqm.c

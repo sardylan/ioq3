@@ -709,13 +709,6 @@ static void LerpMeshVertexes_scalar(md3Surface_t *surf, float backlerp)
 
 static void LerpMeshVertexes(md3Surface_t *surf, float backlerp)
 {
-#if idppc_altivec
-	if (com_altivec->integer) {
-		// must be in a separate translation unit or G3 systems will crash.
-		LerpMeshVertexes_altivec( surf, backlerp );
-		return;
-	}
-#endif // idppc_altivec
 	LerpMeshVertexes_scalar( surf, backlerp );
 }
 
