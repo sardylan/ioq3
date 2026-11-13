@@ -26,26 +26,17 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // 0: client side vertex arrays. Mesa (vc4 / v3d on the Raspberry Pi and
 //    every other Gallium driver) copies them into its own unsynchronized
 //    upload ring, which is the cheapest way to stream dynamic geometry.
-// 1: streaming buffer objects. Required by WebGL. Data is appended to a
-//    ring buffer that is orphaned when it fills up.
+// 1: streaming buffer objects. Required by WebGL. Every vertex attribute
+//    and the indexes have their own buffer object, and each upload
+//    replaces its whole storage with glBufferData() ("orphaning"): the
+//    driver hands out fresh memory instead of waiting for the GPU to
+//    finish reading the previous contents. Appending to a shared buffer
+//    with glBufferSubData() makes Mesa v3d flush and wait on every draw.
 //
 // Data that doesn't change while a batch is drawn (positions, indexes,
 // static texture coordinates) is only uploaded once per batch.
 
 #include "tr_local.h"
-
-#define STREAM_VBO_SIZE			( 8 * 1024 * 1024 )
-#define STREAM_VBO_RESERVE		( 2 * 1024 * 1024 )	// worst case for a single batch
-#define STREAM_IBO_SIZE			( 2 * 1024 * 1024 )
-#define STREAM_IBO_RESERVE		( 512 * 1024 )
-#define STREAM_ALIGN			16
-
-typedef struct {
-	GLuint		buffer;
-	GLenum		target;
-	int			size;
-	int			offset;
-} streamBuffer_t;
 
 typedef struct {
 	const void	*data;
@@ -57,52 +48,25 @@ typedef struct {
 } attribCache_t;
 
 static qboolean			useVBO;
-static streamBuffer_t	streamVBO, streamIBO;
+static GLuint			attribBuffers[ATTR_INDEX_COUNT];
+static GLuint			indexBuffer;
 static int				batchCount;
 static attribCache_t	attribCache[ATTR_INDEX_COUNT];
 static const void		*indexCacheData;
 static int				indexCacheNum, indexCacheBatch;
-static const void		*indexCachePointer;
 
 
 /*
 ================
-R_StreamBufferOrphan
+R_StreamUpload
+
+Replace the whole storage of a buffer with new data
 ================
 */
-static void R_StreamBufferOrphan( streamBuffer_t *sb )
+static void R_StreamUpload( GLenum target, GLuint buffer, const void *data, int size )
 {
-	qglBufferData( sb->target, sb->size, NULL, GL_STREAM_DRAW );
-	sb->offset = 0;
-}
-
-/*
-================
-R_StreamBufferUpload
-
-Returns the "pointer" (buffer offset) to pass to GL
-================
-*/
-static const void *R_StreamBufferUpload( streamBuffer_t *sb, const void *data, int size )
-{
-	int offset = ( sb->offset + STREAM_ALIGN - 1 ) & ~( STREAM_ALIGN - 1 );
-
-	if ( offset + size > sb->size )
-	{
-		// R_BeginVertexBatch() reserves enough space for a whole batch, so
-		// this only happens for oversized batches; anything cached for
-		// the current batch now lives in the old storage, so drop it
-		ri.Printf( PRINT_DEVELOPER, "R_StreamBufferUpload: stream buffer overflow\n" );
-		R_StreamBufferOrphan( sb );
-		Com_Memset( attribCache, 0, sizeof( attribCache ) );
-		indexCacheData = NULL;
-		offset = 0;
-	}
-
-	qglBufferSubData( sb->target, offset, size, data );
-	sb->offset = offset + size;
-
-	return (const void *)(intptr_t)offset;
+	qglBindBuffer( target, buffer );
+	qglBufferData( target, size, data, GL_STREAM_DRAW );
 }
 
 
@@ -132,17 +96,9 @@ void R_InitVertexStream( void )
 
 	ri.Printf( PRINT_ALL, "...using streaming vertex buffer objects\n" );
 
-	streamVBO.target = GL_ARRAY_BUFFER;
-	streamVBO.size = STREAM_VBO_SIZE;
-	qglGenBuffers( 1, &streamVBO.buffer );
-	qglBindBuffer( GL_ARRAY_BUFFER, streamVBO.buffer );
-	R_StreamBufferOrphan( &streamVBO );
-
-	streamIBO.target = GL_ELEMENT_ARRAY_BUFFER;
-	streamIBO.size = STREAM_IBO_SIZE;
-	qglGenBuffers( 1, &streamIBO.buffer );
-	qglBindBuffer( GL_ELEMENT_ARRAY_BUFFER, streamIBO.buffer );
-	R_StreamBufferOrphan( &streamIBO );
+	qglGenBuffers( ATTR_INDEX_COUNT, attribBuffers );
+	qglGenBuffers( 1, &indexBuffer );
+	qglBindBuffer( GL_ELEMENT_ARRAY_BUFFER, indexBuffer );
 }
 
 /*
@@ -157,10 +113,10 @@ void R_ShutdownVertexStream( void )
 
 	qglBindBuffer( GL_ARRAY_BUFFER, 0 );
 	qglBindBuffer( GL_ELEMENT_ARRAY_BUFFER, 0 );
-	qglDeleteBuffers( 1, &streamVBO.buffer );
-	qglDeleteBuffers( 1, &streamIBO.buffer );
-	Com_Memset( &streamVBO, 0, sizeof( streamVBO ) );
-	Com_Memset( &streamIBO, 0, sizeof( streamIBO ) );
+	qglDeleteBuffers( ATTR_INDEX_COUNT, attribBuffers );
+	qglDeleteBuffers( 1, &indexBuffer );
+	Com_Memset( attribBuffers, 0, sizeof( attribBuffers ) );
+	indexBuffer = 0;
 	useVBO = qfalse;
 }
 
@@ -175,14 +131,6 @@ Called when tess starts collecting a new batch; data cached as
 void R_BeginVertexBatch( void )
 {
 	batchCount++;
-
-	if ( useVBO )
-	{
-		if ( streamVBO.offset + STREAM_VBO_RESERVE > streamVBO.size )
-			R_StreamBufferOrphan( &streamVBO );
-		if ( streamIBO.offset + STREAM_IBO_RESERVE > streamIBO.size )
-			R_StreamBufferOrphan( &streamIBO );
-	}
 }
 
 /*
@@ -216,7 +164,8 @@ void R_VertexAttribArray( attribIndex_t attrib, int size, GLenum type, int strid
 		if ( numVertexes <= 0 )
 			return;
 
-		pointer = R_StreamBufferUpload( &streamVBO, data, bytes );
+		R_StreamUpload( GL_ARRAY_BUFFER, attribBuffers[attrib], data, bytes );
+		pointer = NULL;
 	}
 
 	qglVertexAttribPointer( attrib, size, type, normalized, stride, pointer );
@@ -269,23 +218,18 @@ void R_DrawElementsMode( GLenum mode, int numIndexes, const glIndex_t *indexes, 
 
 	if ( useVBO )
 	{
-		if ( indexes == tess.indexes && indexCacheData == indexes &&
-			indexCacheBatch == batchCount && indexCacheNum == numIndexes )
+		// the index buffer keeps tess.indexes until something else is uploaded
+		if ( !( indexes == tess.indexes && indexCacheData == indexes &&
+			indexCacheBatch == batchCount && indexCacheNum == numIndexes ) )
 		{
-			pointer = indexCachePointer;
-		}
-		else
-		{
-			pointer = R_StreamBufferUpload( &streamIBO, indexes, numIndexes * sizeof( glIndex_t ) );
+			R_StreamUpload( GL_ELEMENT_ARRAY_BUFFER, indexBuffer, indexes, numIndexes * sizeof( glIndex_t ) );
 
-			if ( indexes == tess.indexes )
-			{
-				indexCacheData = indexes;
-				indexCacheNum = numIndexes;
-				indexCacheBatch = batchCount;
-				indexCachePointer = pointer;
-			}
+			indexCacheData = indexes;
+			indexCacheNum = numIndexes;
+			indexCacheBatch = batchCount;
 		}
+
+		pointer = NULL;
 	}
 
 	qglDrawElements( mode, numIndexes, GL_INDEX_TYPE, pointer );
